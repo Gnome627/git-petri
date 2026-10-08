@@ -87,6 +87,32 @@ class Emit(unittest.TestCase):
         self.assertIsNone(r.link)
 
 
+class Links(unittest.TestCase):
+    def test_no_opener_reports_instead_of_crashing(self):
+        from unittest import mock
+        from gitpetri import app
+
+        with mock.patch.object(app, "openers", return_value=[["/nonexistent/opener"]]):
+            self.assertFalse(app.browse("https://example.test/x"))
+        with mock.patch.object(app, "openers", return_value=[]):
+            sim = Sim()
+            app.visit(sim, "https://example.test/x", 1.0)
+            self.assertEqual(sim.events[0][1], "note")
+
+    def test_wsl_hands_the_url_to_windows(self):
+        from unittest import mock
+        from gitpetri import app
+
+        which = {"rundll32.exe": "/win/rundll32.exe"}.get
+        with mock.patch.dict(app.os.environ, {"WSL_DISTRO_NAME": "Ubuntu"}), \
+                mock.patch.object(app.shutil, "which", which), \
+                mock.patch.object(app.os.path, "exists", lambda p: True), \
+                mock.patch.object(app.subprocess, "Popen") as popen:
+            self.assertTrue(app.browse("https://example.test/a?b=1&c=2"))
+        self.assertEqual(popen.call_args[0][0], [
+            "/win/rundll32.exe", "url.dll,FileProtocolHandler", "https://example.test/a?b=1&c=2"])
+
+
 class FakeHttp:
     def __init__(self, routes):
         self.routes = routes

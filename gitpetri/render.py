@@ -13,7 +13,7 @@ CHARS = [" "] + [chr(0x2800 + i) for i in range(1, 256)]
 SCRAMBLE = "░▒▓▚▞/\\<>=+*"
 SPIN = "◐◓◑◒"
 DRAW = {"org": 0, "repo": 1, "branch": 2, "pr": 3, "ci": 4}
-EVENT = {"push": "↑", "branch": "+", "pr": "⇄", "fail": "✗", "heal": "✓", "run": "◐"}
+EVENT = {"push": "↑", "branch": "+", "pr": "⇄", "fail": "✗", "heal": "✓", "run": "◐", "note": "!"}
 HINTS = "tab select · o open · l labels · d dormant · r sync · q quit"
 
 
@@ -497,7 +497,7 @@ class Renderer:
             self.put(w - len(HINTS) - 1, y, HINTS, pack(th.muted))
             room -= len(HINTS) + 3
         hues = {"push": th.kind["branch"], "branch": th.kind["branch"], "pr": th.kind["pr"],
-                "fail": th.red, "heal": th.green, "run": th.yellow}
+                "fail": th.red, "heal": th.green, "run": th.yellow, "note": th.yellow}
         x = 1
         for k, (when, kind, text) in enumerate(sim.events):
             age = t - when

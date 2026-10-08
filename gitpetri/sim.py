@@ -133,6 +133,10 @@ class Sim:
     def _say(self, t, kind, text):
         self.events.appendleft((t, kind, text))
 
+    def note(self, t, text):
+        """A message from the program itself, shown in the ticker."""
+        self._say(t, "note", text)
+
     def apply(self, snap, t, wall):
         """Fold a fresh snapshot of one account into the dish."""
         quiet = snap.account not in self.seen  # the first load populates without announcing

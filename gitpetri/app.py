@@ -1,7 +1,9 @@
 """Main loop: poll, simulate, draw."""
 
 import contextlib
+import os
 import queue
+import shutil
 import subprocess
 import time
 
@@ -31,10 +33,43 @@ def start(providers, settings, notify):
     return q, syncers
 
 
+WINDOWS = "/mnt/c/Windows/System32/"
+
+
+def openers():
+    """Commands that can hand a URL to a browser here, best first."""
+    found = []
+    wsl = "WSL_DISTRO_NAME" in os.environ or os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop")
+    if wsl:  # no desktop of its own: hand the URL to Windows
+        if shutil.which("wslview"):
+            found.append(["wslview"])
+        # rundll32 takes the URL as a plain argument, so `&` in it needs no escaping.
+        exe = shutil.which("rundll32.exe") or WINDOWS + "rundll32.exe"
+        if os.path.exists(exe):
+            found.append([exe, "url.dll,FileProtocolHandler"])
+    for name in ("xdg-open", "open"):
+        if shutil.which(name):
+            found.append([name])
+    return found
+
+
 def browse(url):
-    if url.startswith(("http://", "https://")):
-        subprocess.Popen(["xdg-open", url], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True)
+    """Open a URL in the browser; returns False when this system offers no way to."""
+    if not url.startswith(("http://", "https://")):
+        return True
+    for command in openers():
+        try:
+            subprocess.Popen(command + [url], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+            return True
+        except OSError:
+            continue
+    return False
+
+
+def visit(sim, url, t):
+    if not browse(url):
+        sim.note(t, "cannot open links here: install xdg-utils (or wslu on WSL)")
 
 
 def cycle(sim, ui, step):
@@ -122,12 +157,12 @@ def run(providers, settings):
                 elif key in ("o", "enter"):
                     node = sim.nodes.get(ui.selected)
                     if node:
-                        browse(node.url)
+                        visit(sim, node.url, t)
                 elif isinstance(key, tuple):
                     _, col, row = key
                     link, panel = renderer.link, renderer.panel
                     if link and row == link[0] and link[1] <= col < link[2]:
-                        browse(link[3])
+                        visit(sim, link[3], t)
                         continue
                     if panel and panel[0] <= col < panel[2] and panel[1] <= row < panel[3]:
                         continue  # a click on the panel itself is not a click on the dish

@@ -90,8 +90,10 @@ ln -sf "$SHARE/git-petri" "$BIN/git-petri"
 
 echo "git-petri installed: $BIN/git-petri"
 menu_add
-command -v xdg-open >/dev/null 2>&1 ||
+if ! command -v xdg-open >/dev/null 2>&1 && ! command -v wslview >/dev/null 2>&1 &&
+    [ ! -e /mnt/c/Windows/System32/rundll32.exe ]; then
     echo "note: xdg-open is missing, so opening links will not work: $(hint xdg-utils xdg-utils)"
+fi
 case ":$PATH:" in
     *":$BIN:"*) echo "run: git-petri   (or: git petri, git-petri --demo)" ;;
     *) echo "note: $BIN is not in PATH — add it:  export PATH=\"$BIN:\$PATH\"" ;;
