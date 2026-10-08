@@ -300,8 +300,8 @@ class Renderer:
         thread = pack(mix(bg, th.muted, 1.15))
         for n in nodes:
             p = n.parent
-            if p is None:
-                continue
+            if p is None or p.parent is None:
+                continue  # nothing is drawn for an organisation, so nothing leads to it
             c = pack(mix(bg, self.ci_colour(n, t), 0.7)) if n.kind == "ci" else thread
             self.line(cx + n.x, cy + n.y, cx + p.x, cy + p.y, c, 2, 0)
             if n.kind == "pr":
@@ -312,7 +312,7 @@ class Renderer:
 
         for n in nodes:
             x, y, r, kind = cx + n.x, cy + n.y, n.r, n.kind
-            if r < 0.5:
+            if r < 0.5 or kind == "org":
                 continue
             c = self.tint(n, t)
             if kind == "ci":
@@ -322,7 +322,7 @@ class Renderer:
                     f = (heal - 1.2) / 1.8
                     self.ring(x, y, r + 1 + f * 22, pack(mix(th.bright_green, bg, f)))
             elif r >= 5.5:
-                lobes = 3 + n.seed % 3 if kind == "org" else 2 + n.seed % 3
+                lobes = 2 + n.seed % 3
                 self.blob(x, y, r, self.shades(c), t, n.seed, lobes, 0.6 + 0.6 * n.act)
             else:
                 self.disc(x, y, r, pack(c), kind == "pr")
@@ -336,8 +336,13 @@ class Renderer:
         sel = sim.nodes.get(ui.selected)
         if sel:
             self.label(sel, sim, t, used, True)
-        rank = {"ci": 0, "org": 1, "repo": 2, "pr": 3, "branch": 4}
+        # An organisation gets a caption only where one is still free once its
+        # repositories are labelled, and none at all when a repository bears its name.
+        rank = {"ci": 0, "repo": 1, "pr": 2, "branch": 3, "org": 4}
         for n in sorted(nodes, key=lambda n: (rank[n.kind], -n.act)):
+            if n.kind == "org":
+                self.caption(n, nodes, used)
+                continue
             if n is sel or n.r < 1 or n.dead:
                 continue
             if self.compact and (n.kind in ("branch", "pr") or n.kind == "repo" and n.act < 0.25):
@@ -382,11 +387,6 @@ class Renderer:
         col, row = int(x) >> 1, int(y) >> 2
         age = t - n.born - 0.4
         kind = n.kind
-        if kind == "org":
-            s = self.reveal(clip(n.label, 22), age, n.seed, t)
-            c = th.bright if force else mix(th.bg, th.bright, 0.55 + 0.45 * n.act)
-            self.put(col - len(s) // 2, row, s, pack(c) | BOLD, None if force else used)
-            return
         if kind == "ci":
             heal = t - n.heal
             glyph = "✓" if n.state == "ok" else "✗" if n.state == "failed" else SPIN[int(t) % 4]
@@ -416,6 +416,16 @@ class Renderer:
             self.put((int(x + r) >> 1) + 2, row, s, c, guard)
         else:
             self.put((int(x - r) >> 1) - 1 - len(s), row, s, c, guard)
+
+    def caption(self, org, nodes, used):
+        repos = [n for n in nodes if n.parent is org and not n.dead]
+        if not repos or any(n.label.lower() == org.label.lower() for n in repos):
+            return
+        top = min(n.y - n.r for n in repos)
+        left, right = min(n.x - n.r for n in repos), max(n.x + n.r for n in repos)
+        s = clip(org.label, 22)
+        col = int(self.cx + (left + right) / 2) // 2 - len(s) // 2
+        self.put(col, int(self.cy + top) // 4 - 1, s, pack(self.theme.muted) | BOLD, used)
 
     def focus(self, n):
         th = self.theme

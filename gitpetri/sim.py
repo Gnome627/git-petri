@@ -105,12 +105,18 @@ class Sim:
         live = [n for n in self.nodes.values() if not n.dead]
         for n in live:
             n.ext = n.base + (8.0 if n.spores else 0.0)
+        heaps = {}
         for n in sorted(live, key=lambda n: -ORDER[n.kind]):  # leaves first
             p = n.parent
-            if p is not None:
+            if p is None:
+                continue
+            if p.parent is None:  # repositories pile up round an organisation: areas add
+                heaps[p] = heaps.get(p, 0.0) + (n.ext * 0.62) ** 2
+            else:
                 p.ext = max(p.ext, n.rest + n.ext)
-        # Tethers fan out rather than line up, so a colony spans less than its longest chain.
-        orgs = [n.ext * 0.62 for n in live if n.parent is None]
+        for org, area in heaps.items():
+            org.ext = sqrt(area) * 1.25
+        orgs = [n.ext for n in live if n.parent is None]
         if orgs:
             fit = sqrt(FILL * self.A * self.B / sum(e * e for e in orgs))
             self.fit = min(fit, 0.94 * self.B / max(orgs))
@@ -219,9 +225,9 @@ class Sim:
             org, _ = self._node(f"{acct}:{owner}", "org", acct, None, t)
             org.label, org.act = owner, max(acts)
             sizes = {i: self._size(repos[i], acts[i], wall) for i in fresh}
-            # An organisation outgrows its largest repository as well as their number.
-            org.base = min(26.0, max(6 + 2.6 * sqrt(len(fresh)),
-                                     1.2 * max(s[0] for s in sizes.values())))
+            # An organisation has no body of its own: it is the point its repositories
+            # heap up around, which keeps `hrbox/hrbox` from showing as two things.
+            org.base = 0.5
             org.info = [owner, f"{len(repos) - asleep} active · {asleep} dormant · {acct}"]
             org.url = repos[0].url.rsplit("/", 1)[0] if repos[0].url else ""
             for i in fresh:
@@ -247,7 +253,7 @@ class Sim:
         n.label, n.act, n.url = repo.name, act, repo.url
         n.base, live, pulls = size
         # Dormant repositories stay fused into the organisation; active ones bud off.
-        n.rest = org.base + n.base * (-0.35 + 2.8 * act ** 0.7)
+        n.rest = 0.0  # drawn towards the middle of the heap; collisions do the packing
         n.show = act > 0.08  # roughly: pushed within the last two weeks
         n.info = [full, f"pushed {ago(wall - repo.ts)}",
                   f"{live} live branches · {pulls} open PRs"]
@@ -328,14 +334,14 @@ class Sim:
     # -- queries ------------------------------------------------------------
 
     def ordered(self):
-        live = [n for n in self.nodes.values() if not n.dead]
+        live = [n for n in self.nodes.values() if not n.dead and n.kind != "org"]
         return sorted(live, key=lambda n: (n.acct, n.id.split("/")[0], ORDER[n.kind], -n.act))
 
     def pick(self, x, y):
         best, best_d = None, 1e9
         for n in self.nodes.values():
             d = math.hypot(n.x - x, n.y - y) - n.r
-            if d < best_d and not n.dead:
+            if d < best_d and not n.dead and n.kind != "org":
                 best, best_d = n, d
         return best if best_d < 4 else None
 
@@ -413,7 +419,7 @@ class Sim:
             for b in orgs[k + 1:]:
                 dx, dy = b.x - a.x, b.y - a.y
                 d = sqrt(dx * dx + dy * dy) or 1.0
-                reach = (a.ext + b.ext) * s * 0.75  # keep whole colonies, not just nuclei, apart
+                reach = (a.ext + b.ext) * s  # keep whole colonies, not just nuclei, apart
                 if d < reach:
                     f = (reach - d) * 1.5 / d
                     FX[a.i] -= dx * f
@@ -430,6 +436,12 @@ class Sim:
             d = sqrt(dx * dx + dy * dy)
             if d < 0.01:
                 dx, dy, d = rng.uniform(-1, 1), rng.uniform(-1, 1), 1.0
+            if p.parent is None:
+                # A gentle pull, stronger on big repositories so they settle in the middle.
+                f = 0.09 * R[i] * KS / max(d, 1.0) if d > 1 else 0.0
+                FX[i] -= dx * f
+                FY[i] -= dy * f
+                continue
             f = (d - ns[i].rest * s) * KS / d
             FX[i] -= dx * f
             FY[i] -= dy * f
@@ -441,7 +453,7 @@ class Sim:
             mob = dt * rate * heat / (1 + R[i] / 8)
             x = X[i] + max(-2.5, min(2.5, FX[i] * mob))
             y = Y[i] + max(-2.5, min(2.5, FY[i] * mob))
-            keep = R[i] if P[i] is not None else max(R[i], n.ext * s * 0.55)
+            keep = R[i] if P[i] is not None else max(R[i], n.ext * s * 0.8)
             ea, eb = max(4.0, A - keep - 3), max(4.0, B - keep - 3)
             f = (x / ea) ** 2 + (y / eb) ** 2
             if f > 1:
