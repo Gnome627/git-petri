@@ -60,6 +60,33 @@ class Heal(unittest.TestCase):
         self.assertEqual([e[1] for e in sim.events], ["heal", "run"])
 
 
+class Emit(unittest.TestCase):
+    def test_erasing_the_panel_never_writes_underlined_blanks(self):
+        import re
+        from gitpetri.app import Ui
+        from gitpetri.providers import Demo
+        from gitpetri.render import Renderer
+        from gitpetri.theme import Theme
+
+        sim, ui, r = Sim(), Ui(), Renderer(Theme())
+        r.resize(100, 30)
+        sim.resize(r.A, r.B)
+        sim.apply(Snapshot("demo", Demo().fetch(), 0), 0.0, time.time())
+        out = ""
+        for selected in [n.id for n in sim.ordered()[:6]] + [None]:
+            ui.selected = selected
+            r.draw(sim, ui, 9.0, time.time())
+            out += r.emit()
+        self.assertIn("\x1b[0;4;38", out)
+        underlined = False
+        for sgr, text in re.findall(r"\x1b\[([\d;]*)m|([^\x1b]+)", out):
+            if text:
+                self.assertFalse(underlined and " " in text, repr(text))
+            else:
+                underlined = sgr.startswith("0;4;") or sgr.startswith("0;1;4;")
+        self.assertIsNone(r.link)
+
+
 class FakeHttp:
     def __init__(self, routes):
         self.routes = routes

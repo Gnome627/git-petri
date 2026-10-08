@@ -13,7 +13,7 @@ _SEQ = re.compile(r"\x1b\[<(\d+);(\d+);(\d+)([Mm])|\x1b\[([ABCDZ])|\x1bO([ABCD])
 _ARROWS = {"A": "up", "B": "down", "C": "right", "D": "left", "Z": "back"}
 _PLAIN = {"\t": "next", "\r": "enter", "\n": "enter", "\x1b": "esc", "\x03": "q", " ": "space"}
 # The same physical keys on a Russian layout.
-_LAYOUT = str.maketrans("йкщдтзЙКЩДТЗ", "qroltpqroltp")
+_LAYOUT = str.maketrans("йкщдтзвЙКЩДТЗВ", "qroltpdqroltpd")
 
 
 class Terminal:
@@ -22,7 +22,14 @@ class Terminal:
         self.saved = termios.tcgetattr(self.fd)
         tty.setcbreak(self.fd)
         self.resized = True
+        # Anything that should end an idle wait writes to this pipe: pollers through
+        # wake(), and signals (a resize) through the interpreter's wakeup fd.
+        self.pipe_r, self.pipe_w = os.pipe()
+        os.set_blocking(self.pipe_r, False)
+        os.set_blocking(self.pipe_w, False)
+        signal.set_wakeup_fd(self.pipe_w, warn_on_full_buffer=False)
         signal.signal(signal.SIGWINCH, self._winch)
+        signal.signal(signal.SIGUSR1, lambda *_: None)  # only there to end the idle wait
         signal.signal(signal.SIGTERM, self._term)
         self.write("\x1b[?1049h\x1b[?25l\x1b[?1000h\x1b[?1006h\x1b[2J")
         return self
@@ -30,6 +37,13 @@ class Terminal:
     def __exit__(self, *exc):
         self.write("\x1b[?1006l\x1b[?1000l\x1b[?2026l\x1b[0m\x1b[?25h\x1b[?1049l")
         termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
+        signal.set_wakeup_fd(-1)
+
+    def wake(self):
+        try:
+            os.write(self.pipe_w, b"\0")
+        except OSError:
+            pass  # pipe full: a wake-up is already pending
 
     def _winch(self, *_):
         self.resized = True
@@ -46,12 +60,16 @@ class Terminal:
         sys.stdout.flush()
 
     def keys(self, timeout):
-        """Wait up to `timeout` seconds; return decoded input events."""
-        try:
-            ready, _, _ = select.select([self.fd], [], [], max(0.0, timeout))
-        except InterruptedError:
-            return []
-        if not ready:
+        """Wait up to `timeout` seconds (None: until woken); return decoded input events."""
+        if timeout is not None:
+            timeout = max(0.0, timeout)
+        ready, _, _ = select.select([self.fd, self.pipe_r], [], [], timeout)
+        if self.pipe_r in ready:
+            try:
+                os.read(self.pipe_r, 4096)
+            except OSError:
+                pass
+        if self.fd not in ready:
             return []
         data = os.read(self.fd, 4096).decode("utf-8", "ignore")
         out = []

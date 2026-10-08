@@ -1,7 +1,11 @@
 """Palette from the active omarchy theme, reloaded when the theme changes."""
 
 import os
-import tomllib
+
+try:
+    import tomllib
+except ImportError:  # Python 3.10: no omarchy theme, the built-in palette is used
+    tomllib = None
 
 PATHS = (
     "~/.local/state/omarchy/current/theme/colors.toml",
@@ -37,7 +41,7 @@ class Theme:
 
     def load(self):
         raw = dict(FALLBACK)
-        if self.path:
+        if self.path and tomllib:
             try:
                 self.mtime = os.stat(self.path).st_mtime
                 with open(self.path, "rb") as f:

@@ -60,7 +60,8 @@ class GitLab:
             pid, repo = item
             base = f"{self.api}/projects/{pid}"
             branches = self._optional(base + "/repository/branches", {
-                "per_page": 30, "sort": "updated_desc"})
+                "per_page": 100, "sort": "updated_desc"})
+            repo.branch_ts = [parse_ts(b["commit"]["committed_date"]) for b in branches]
             head = [b for b in branches if b.get("default")]
             rest = sorted((b for b in branches if not b.get("default")),
                           key=lambda b: b["commit"]["committed_date"], reverse=True)
@@ -76,8 +77,10 @@ class GitLab:
                 repo.branches.append(Branch(
                     b["name"], parse_ts(b["commit"]["committed_date"]),
                     self.commits[key][1], bool(b.get("default"))))
-            for m in self._optional(base + "/merge_requests", {
-                    "state": "opened", "order_by": "updated_at", "per_page": o["pulls"]}):
+            merges = self._optional(base + "/merge_requests", {
+                "state": "opened", "order_by": "updated_at", "per_page": 50})
+            repo.open_pulls = len(merges)
+            for m in merges[: o["pulls"]]:
                 repo.pulls.append(Pull(
                     m["iid"], m["title"], m.get("source_branch", ""),
                     parse_ts(m.get("updated_at")), (m.get("author") or {}).get("username", ""),

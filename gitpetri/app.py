@@ -1,9 +1,11 @@
 """Main loop: poll, simulate, draw."""
 
+import contextlib
 import queue
 import subprocess
 import time
 
+from . import config
 from .render import Renderer
 from .sim import Sim
 from .sync import Syncer
@@ -20,12 +22,19 @@ class Ui:
         self.accounts = []  # (name, state, error)
 
 
-def start(providers, interval):
+def start(providers, settings, notify):
     q = queue.Queue()
-    syncers = [Syncer(name, p, q, interval) for name, p in providers]
+    syncers = [Syncer(name, p, q, settings["interval"], settings["max_interval"], notify)
+               for name, p in providers]
     for s in syncers:
         s.start()
     return q, syncers
+
+
+def browse(url):
+    if url.startswith(("http://", "https://")):
+        subprocess.Popen(["xdg-open", url], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
 
 
 def cycle(sim, ui, step):
@@ -38,14 +47,16 @@ def cycle(sim, ui, step):
 
 
 def run(providers, settings):
-    theme, sim, ui = Theme(), Sim(), Ui()
+    theme, sim, ui = Theme(), Sim(settings["stale_days"]), Ui()
     renderer = Renderer(theme)
-    q, syncers = start(providers, settings["interval"])
     frame = 1.0 / max(1, min(60, settings["fps"]))
-    with Terminal() as term:
+    with Terminal() as term, contextlib.ExitStack() as stack:
+        stack.callback(config.register().unlink, missing_ok=True)
+        q, syncers = start(providers, settings, term.wake)
         last = time.monotonic()
         theme_check = last
         dirty, beat = True, -1
+        config_seen = config.mtime()
         while True:
             t = time.monotonic()
             dt, last = min(0.1, t - last), t
@@ -54,10 +65,14 @@ def run(providers, settings):
                 renderer.resize(*term.size())
                 sim.resize(renderer.A, renderer.B, t, time.time())
                 dirty = True
-            if t - theme_check > 2:
+            if t - theme_check > 2 or config.mtime() != config_seen:
                 theme_check = t
                 if theme.changed():
                     renderer.retheme()
+                    dirty = True
+                if config.mtime() != config_seen:  # `git-petri activity 3d` from another shell
+                    config_seen = config.mtime()
+                    sim.set_stale(config.load()["settings"]["stale_days"], t, time.time())
                     dirty = True
             while True:
                 try:
@@ -71,18 +86,22 @@ def run(providers, settings):
             if ui.selected not in sim.nodes:
                 ui.selected = None
 
-            # At rest nothing is simulated or drawn. A running pipeline's spinner advances
-            # on a half-second beat; only a rearranging dish is drawn at the full rate.
+            # At rest the process sleeps until a key, a resize or a poller wakes it: no
+            # timer at all. A running pipeline's spinner ticks once a second; only a
+            # rearranging dish is drawn at the full rate.
             flowing = sim.tick(dt, t) or sim.animating(t)
-            spinning = not sim.nodes or sim.counts()["running"]
-            if spinning and int(t * 2) != beat:
-                beat, dirty = int(t * 2), True
+            spinning = not sim.seen or sim.counts()["running"]
+            if spinning and int(t) != beat:
+                beat, dirty = int(t), True
             if dirty or flowing:
                 renderer.draw(sim, ui, t, time.time())
                 term.write(renderer.emit())
                 dirty = False
 
-            wait = frame - (time.monotonic() - t) if flowing else 0.5 - t * 2 % 1 / 2
+            if flowing:
+                wait = frame - (time.monotonic() - t)
+            else:
+                wait = 1.0 - t % 1 if spinning else None
             for key in term.keys(wait):
                 dirty = True
                 if key == "q":
@@ -96,16 +115,22 @@ def run(providers, settings):
                 elif key == "r":
                     for s in syncers:
                         s.kick.set()
+                elif key == "d":
+                    sim.toggle_dormant(t, time.time())
                 elif key == "l":
                     renderer.labels = not renderer.labels
                 elif key in ("o", "enter"):
                     node = sim.nodes.get(ui.selected)
-                    if node and node.url.startswith(("http://", "https://")):
-                        subprocess.Popen(["xdg-open", node.url], stdin=subprocess.DEVNULL,
-                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                         start_new_session=True)
+                    if node:
+                        browse(node.url)
                 elif isinstance(key, tuple):
                     _, col, row = key
+                    link, panel = renderer.link, renderer.panel
+                    if link and row == link[0] and link[1] <= col < link[2]:
+                        browse(link[3])
+                        continue
+                    if panel and panel[0] <= col < panel[2] and panel[1] <= row < panel[3]:
+                        continue  # a click on the panel itself is not a click on the dish
                     node = sim.pick(col * 2 + 1 - renderer.cx, row * 4 + 2 - renderer.cy)
                     ui.selected = node.id if node else None
 

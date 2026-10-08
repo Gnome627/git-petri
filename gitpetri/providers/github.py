@@ -20,7 +20,9 @@ query($n:Int!,$b:Int!,$c:Int!,$p:Int!){viewer{repositories(first:$n,isArchived:f
   refs(refPrefix:"refs/heads/",first:$b,orderBy:{field:TAG_COMMIT_DATE,direction:DESC}){nodes{
    name target{... on Commit{history(first:$c){nodes{
     oid messageHeadline committedDate author{name user{login}}}}}}}}
-  pullRequests(first:$p,states:OPEN,orderBy:{field:UPDATED_AT,direction:DESC}){nodes{
+  heads:refs(refPrefix:"refs/heads/",first:100,orderBy:{field:TAG_COMMIT_DATE,direction:DESC}){
+   nodes{target{... on Commit{committedDate}}}}
+  pullRequests(first:$p,states:OPEN,orderBy:{field:UPDATED_AT,direction:DESC}){totalCount nodes{
    number title url isDraft updatedAt headRefName author{login}}}
 }}}}
 """
@@ -85,6 +87,9 @@ class GitHub:
                 repo.branches.append(Branch(
                     ref["name"], commits[0].ts if commits else 0.0, commits,
                     ref["name"] == default))
+            repo.branch_ts = [parse_ts((h.get("target") or {}).get("committedDate"))
+                              for h in (r.get("heads") or {}).get("nodes") or []]
+            repo.open_pulls = (r.get("pullRequests") or {}).get("totalCount") or 0
             for p in (r.get("pullRequests") or {}).get("nodes") or []:
                 repo.pulls.append(Pull(
                     p["number"], p["title"], p["headRefName"], parse_ts(p["updatedAt"]),

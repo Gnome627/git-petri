@@ -7,13 +7,14 @@ from .theme import mix, pack
 
 TAU = 2 * pi
 BOLD = 1 << 24
+UNDERLINE = 1 << 25
 DOTS = (0x01, 0x08, 0x02, 0x10, 0x04, 0x20, 0x40, 0x80)  # [row * 2 + column] within a cell
 CHARS = [" "] + [chr(0x2800 + i) for i in range(1, 256)]
 SCRAMBLE = "░▒▓▚▞/\\<>=+*"
 SPIN = "◐◓◑◒"
 DRAW = {"org": 0, "repo": 1, "branch": 2, "pr": 3, "ci": 4}
 EVENT = {"push": "↑", "branch": "+", "pr": "⇄", "fail": "✗", "heal": "✓", "run": "◐"}
-HINTS = "tab select · o open · l labels · r sync · q quit"
+HINTS = "tab select · o open · l labels · d dormant · r sync · q quit"
 
 
 def _stipples():
@@ -90,6 +91,7 @@ class Renderer:
         self.bits, self.col, self.own = [0] * n, [0] * n, [0] * n
         self.txt = {}
         self.me = 0
+        self.panel = self.link = None  # (x0, y0, x1, y1) of the info panel; (y, x0, x1, url)
         th = self.theme
         c = pack(th.speck)
         for i, b in self.specks:
@@ -198,7 +200,7 @@ class Renderer:
         reach = r * (1 + spike)
         x0, x1 = max(0, int(cx - reach)), min(2 * w - 1, int(cx + reach))
         y0, y1 = max(0, int(cy - reach)), min(4 * self.H - 1, int(cy + reach))
-        beat = int(t * 2)  # a running pipeline is the one thing that keeps ticking, slowly
+        beat = int(t)  # a running pipeline is the one thing that keeps ticking, slowly
         spin, flow, seed = beat * 0.7, beat, n.seed
         for py in range(y0, y1 + 1):
             dy = py + 0.5 - cy
@@ -345,7 +347,7 @@ class Renderer:
         if sel:
             self.focus(sel)
         if not sim.nodes:
-            self.waiting(ui, t)
+            self.waiting(sim, ui, t)
         self.header(sim, ui, t)
         self.footer(sim, t)
 
@@ -387,7 +389,7 @@ class Renderer:
             return
         if kind == "ci":
             heal = t - n.heal
-            glyph = "✓" if n.state == "ok" else "✗" if n.state == "failed" else SPIN[int(t * 2) % 4]
+            glyph = "✓" if n.state == "ok" else "✗" if n.state == "failed" else SPIN[int(t) % 4]
             if heal < 1.2:
                 glyph = SCRAMBLE[int(t * 18) % len(SCRAMBLE)]
             c = pack(self.ci_colour(n, t)) | BOLD
@@ -433,15 +435,23 @@ class Renderer:
         frame, dim = pack(th.muted), pack(th.dim)
         top = f"╭─ {title} " + "─" * (inner - len(title) - 1) + "╮"
         self.put(left, 2, top, frame)
+        self.panel = (left, 2, left + inner + 4, 4 + len(lines))
         for k, s in enumerate(lines):
+            s = clip(s, inner)
             self.put(left, 3 + k, "│ " + " " * inner + " │", frame)
-            self.put(left + 2, 3 + k, clip(s, inner), pack(th.bright) | BOLD if k == 0 else dim)
+            c = pack(th.bright) | BOLD if k == 0 else dim
+            if n.url and k == len(lines) - 1:
+                c = pack(th.accent) | UNDERLINE
+                self.link = (3 + k, left + 2, left + 2 + len(s), n.url)
+            self.put(left + 2, 3 + k, s, c)
         self.put(left, 3 + len(lines), "╰" + "─" * (inner + 2) + "╯", frame)
 
-    def waiting(self, ui, t):
+    def waiting(self, sim, ui, t):
         th = self.theme
         row = int(self.cy) >> 2
-        s = "inoculating " + SPIN[int(t * 2) % 4]
+        s = "inoculating " + SPIN[int(t) % 4]
+        if sim.seen:
+            s = "nothing active lately — d shows dormant"
         self.put(self.W // 2 - len(s) // 2, row - 1, s, pack(th.accent) | BOLD)
         for k, (name, state, error) in enumerate(ui.accounts):
             s = f"{name}: {error or state}"
@@ -468,8 +478,9 @@ class Renderer:
         if c["red"]:
             parts.append((f"✗ {c['red']} failing", pack(th.red) | BOLD))
         if c["running"]:
-            parts.append((f"{SPIN[int(t * 2) % 4]} {c['running']} running", pack(th.yellow)))
-        parts.append((f"{c['org']} orgs · {c['repo']} repos", pack(th.dim)))
+            parts.append((f"{SPIN[int(t) % 4]} {c['running']} running", pack(th.yellow)))
+        quiet = f" · {c['dormant']} dormant" if c["dormant"] else ""
+        parts.append((f"{c['org']} orgs · {c['repo']} repos{quiet}", pack(th.dim)))
         parts.append((f"{c['branch']} branches · {c['pr']} PRs", pack(th.dim)))
         x = 14
         for s, colour in parts:
@@ -508,7 +519,7 @@ class Renderer:
     def sgr(self, k):
         s = self._sgr.get(k)
         if s is None:
-            bold = "1;" if k & BOLD else ""
+            bold = ("1;" if k & BOLD else "") + ("4;" if k & UNDERLINE else "")
             s = self._sgr[k] = f"\x1b[0;{bold}38;2;{k >> 16 & 255};{k >> 8 & 255};{k & 255}m"
         return s
 
@@ -542,7 +553,11 @@ class Renderer:
                     continue
                 if pos != i:
                     out.append(f"\x1b[{y + 1};{i - a + 1}H")
-                if k != cur and c != " ":
+                if c == " ":
+                    if cur > 0 and cur & UNDERLINE:  # a blank still shows an underline
+                        out.append("\x1b[0m")
+                        cur = -1
+                elif k != cur:
                     out.append(self.sgr(k))
                     cur = k
                 out.append(c)

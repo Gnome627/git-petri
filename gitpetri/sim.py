@@ -6,13 +6,13 @@ Coordinates are braille sub-pixels (square), origin at the centre of the dish.
 import math
 import random
 from collections import deque
-from math import exp, sqrt
+from math import exp, log2, sqrt
 
 from .model import pipelines
 
 DAY = 86400.0
 ORDER = {"org": 0, "repo": 1, "ci": 2, "pr": 3, "branch": 4}
-FILL = 0.55  # share of the dish the colonies (an organisation and all it shed) may claim
+FILL = 0.9  # share of the dish the colonies (an organisation and all it shed) may claim
 KC, KS = 7.0, 5.0  # collision and tether stiffness
 VISCOSITY = 0.45  # how unhurriedly the culture rearranges after new data (1 = brisk)
 STILL = 0.01  # sub-pixels per step below which the dish counts as at rest
@@ -57,7 +57,9 @@ class Node:
 
 
 class Sim:
-    def __init__(self):
+    def __init__(self, stale_days=7):
+        self.stale = self.stale_default = stale_days * DAY  # older repositories stay off the dish
+        self.dormant = {}  # account -> repositories left off for being stale
         self.nodes = {}
         self.events = deque(maxlen=40)  # (t, kind, text)
         self.seen = set()
@@ -81,6 +83,17 @@ class Sim:
             self.tier += 1
             self._replay(t, wall)
         self.settle(t)
+
+    def set_stale(self, days, t, wall):
+        showing_all = self.stale == float("inf")
+        self.stale_default = days * DAY
+        if not showing_all and self.stale != self.stale_default:
+            self.stale = self.stale_default
+            self.resize(self.A, self.B, t, wall)
+
+    def toggle_dormant(self, t, wall):
+        self.stale = self.stale_default if self.stale == float("inf") else float("inf")
+        self.resize(self.A, self.B, t, wall)
 
     def _replay(self, t, wall):
         for snap in list(self.last.values()):
@@ -185,37 +198,55 @@ class Sim:
     def _fold(self, snap, t, wall, quiet):
         acct = snap.account
         self.mark += 1
-        floor = TIERS[self.tier][1]
+        # Asking for dormant repositories overrides the small-window cull of quiet ones.
+        floor = 0.0 if self.stale == float("inf") else TIERS[self.tier][1]
+        dormant = 0
         owners = {}
         for repo in snap.repos:
             owners.setdefault(repo.owner, []).append(repo)
         for owner, repos in owners.items():
             acts = [exp(-max(0.0, wall - r.ts) / (5 * DAY)) for r in repos]
+            fresh = [i for i, r in enumerate(repos) if wall - r.ts <= self.stale]
+            asleep = len(repos) - len(fresh)
+            dormant += asleep
+            fresh = [i for i in fresh if acts[i] >= floor]
+            if not fresh:
+                continue  # an organisation nobody has pushed to lately is not drawn at all
             org, _ = self._node(f"{acct}:{owner}", "org", acct, None, t)
             org.label, org.act = owner, max(acts)
-            org.base = min(24.0, 9 + 2.6 * sqrt(len(repos)))
-            org.info = [owner, f"{len(repos)} repositories · {acct}"]
+            sizes = {i: self._size(repos[i], acts[i], wall) for i in fresh}
+            # An organisation outgrows its largest repository as well as their number.
+            org.base = min(26.0, max(6 + 2.6 * sqrt(len(fresh)),
+                                     1.2 * max(s[0] for s in sizes.values())))
+            org.info = [owner, f"{len(repos) - asleep} active · {asleep} dormant · {acct}"]
             org.url = repos[0].url.rsplit("/", 1)[0] if repos[0].url else ""
-            newest = set(sorted(range(len(repos)), key=lambda i: -repos[i].ts)[:4])
-            for i, repo in enumerate(repos):
-                if acts[i] >= floor or i in newest:
-                    self._repo(org, repo, acts[i], i in newest, t, wall, quiet)
+            for i in fresh:
+                self._repo(org, repos[i], acts[i], sizes[i], t, wall, quiet)
+        self.dormant[acct] = dormant
         for n in self.nodes.values():
             if n.acct == acct and n.mark != self.mark and not n.dead:
                 n.dead = True
                 if n.kind == "pr" and not quiet:
                     self._say(t, "pr", f"{n.info[0]} closed")
 
-    def _repo(self, org, repo, act, newest, t, wall, quiet):
+    def _size(self, repo, act, wall):
+        """Radius from recency and from how much is in flight: live branches and open PRs."""
+        heads = repo.branch_ts or [b.ts for b in repo.branches]
+        live = sum(wall - ts < 30 * DAY for ts in heads)
+        pulls = max(repo.open_pulls, len(repo.pulls))
+        weight = min(1.0, log2(1 + live + 2 * pulls) / log2(41))  # saturates near 40
+        return (3 + 7 * act ** 0.5) * (0.55 + 0.9 * weight), live, pulls
+
+    def _repo(self, org, repo, act, size, t, wall, quiet):
         n, _ = self._node(f"{org.id}/{repo.name}", "repo", org.acct, org, t)
         full = f"{repo.owner}/{repo.name}"
         n.label, n.act, n.url = repo.name, act, repo.url
-        n.base = 3 + 7 * act ** 0.5
+        n.base, live, pulls = size
         # Dormant repositories stay fused into the organisation; active ones bud off.
         n.rest = org.base + n.base * (-0.35 + 2.8 * act ** 0.7)
-        n.show = newest or act > 0.08
+        n.show = act > 0.08  # roughly: pushed within the last two weeks
         n.info = [full, f"pushed {ago(wall - repo.ts)}",
-                  f"{len(repo.branches)} branches · {len(repo.pulls)} open PRs"]
+                  f"{live} live branches · {pulls} open PRs"]
 
         cap, _, satellites, twig, passing, ncommits = TIERS[self.tier]
         if act < satellites:
@@ -305,7 +336,8 @@ class Sim:
         return best if best_d < 4 else None
 
     def counts(self):
-        c = {"org": 0, "repo": 0, "branch": 0, "pr": 0, "red": 0, "running": 0}
+        c = {"org": 0, "repo": 0, "branch": 0, "pr": 0, "red": 0, "running": 0,
+             "dormant": sum(self.dormant.values())}
         for n in self.nodes.values():
             if n.dead:
                 continue
@@ -377,7 +409,7 @@ class Sim:
             for b in orgs[k + 1:]:
                 dx, dy = b.x - a.x, b.y - a.y
                 d = sqrt(dx * dx + dy * dy) or 1.0
-                reach = (a.ext + b.ext) * s * 0.95  # keep whole colonies, not just nuclei, apart
+                reach = (a.ext + b.ext) * s * 0.75  # keep whole colonies, not just nuclei, apart
                 if d < reach:
                     f = (reach - d) * 1.5 / d
                     FX[a.i] -= dx * f

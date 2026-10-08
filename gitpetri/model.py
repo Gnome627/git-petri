@@ -86,6 +86,9 @@ class Repo:
     branches: list = field(default_factory=list)
     pulls: list = field(default_factory=list)
     runs: list = field(default_factory=list)
+    # How much is going on, beyond the few branches and PRs fetched in detail:
+    branch_ts: list = field(default_factory=list)  # head commit time of every branch seen
+    open_pulls: int = 0
 
 
 @dataclass(slots=True)

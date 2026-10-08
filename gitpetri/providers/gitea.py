@@ -64,13 +64,14 @@ class Gitea:
             repos.append(Repo(
                 owner=r["owner"]["login"], name=r["name"], ts=parse_ts(r.get("updated_at")),
                 url=r.get("html_url", ""), default_branch=r.get("default_branch") or "",
-                private=bool(r.get("private"))))
+                private=bool(r.get("private")), open_pulls=r.get("open_pr_counter") or 0))
 
         horizon = time.time() - o["active_days"] * 86400
         def detail(repo):
             full = f"{repo.owner}/{repo.name}"
             base = f"{self.api}/repos/{full}"
-            branches = self._optional(base + "/branches", {"limit": 30}) or []
+            branches = self._optional(base + "/branches", {"limit": 50}) or []
+            repo.branch_ts = [parse_ts(b["commit"].get("timestamp")) for b in branches]
             branches.sort(key=lambda b: (b["name"] != repo.default_branch,
                                          -parse_ts(b["commit"].get("timestamp"))))
             for b in branches[: o["branches"]]:
