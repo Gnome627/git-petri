@@ -399,7 +399,8 @@ class Renderer:
             below = int(y + r) // 4 + 1
             s = self.reveal(clip(n.label, 16), age, n.seed, t)
             # `l` hides the name; the ✓ / ✗ in the middle of the cell always stays.
-            if force or (self.labels and not (self.compact and n.state == "ok")):
+            # A passing pipeline needs no name: only failing and running ones are worth reading.
+            if force or (self.labels and n.state != "ok"):
                 self.put(col - len(s) // 2, below, s, c, None if force else used)
             return
         hue = th.fg if kind == "repo" else th.kind[kind]
