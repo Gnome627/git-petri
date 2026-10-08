@@ -341,7 +341,8 @@ class Renderer:
         rank = {"ci": 0, "repo": 1, "pr": 2, "branch": 3, "org": 4}
         for n in sorted(nodes, key=lambda n: (rank[n.kind], -n.act)):
             if n.kind == "org":
-                self.caption(n, nodes, used)
+                if self.labels:
+                    self.caption(n, nodes, used)
                 continue
             if n is sel or n.r < 1 or n.dead:
                 continue
@@ -397,7 +398,8 @@ class Renderer:
             used.add(row * self.W + col)
             below = int(y + r) // 4 + 1
             s = self.reveal(clip(n.label, 16), age, n.seed, t)
-            if force or not (self.compact and n.state == "ok"):
+            # `l` hides the name; the ✓ / ✗ in the middle of the cell always stays.
+            if force or (self.labels and not (self.compact and n.state == "ok")):
                 self.put(col - len(s) // 2, below, s, c, None if force else used)
             return
         hue = th.fg if kind == "repo" else th.kind[kind]
